@@ -8,10 +8,30 @@ import { DigestPage } from './views/digest.js';
 import { Layout } from './views/layout.js';
 import { StatusBoard } from './views/status.js';
 
+function isMissingFile(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
 export function createApp(config: RigConfig = loadConfig()) {
   const app = new Hono();
 
   app.get('/health', (c) => c.json({ ok: true, lane: lane().id }));
+
+  app.get('/api/digest/:night', (c) => {
+    const night = c.req.param('night');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(night)) return c.notFound();
+
+    try {
+      const { rows, malformedLines } = readNight(config.runsDir, night);
+      return c.json({
+        rows: rows.toSorted((a, b) => a.job.localeCompare(b.job)),
+        malformedLines,
+      });
+    } catch (error) {
+      if (isMissingFile(error)) return c.notFound();
+      throw error;
+    }
+  });
 
   app.get('/', (c) =>
     c.html(
@@ -29,9 +49,7 @@ export function createApp(config: RigConfig = loadConfig()) {
     try {
       digest = readNight(config.runsDir, night);
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-        return c.notFound();
-      }
+      if (isMissingFile(error)) return c.notFound();
       throw error;
     }
 
