@@ -1,0 +1,78 @@
+name: Publish digest preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: >-
+          Choose the preview stage. Only choose cleanup-without-marker after course review
+          confirmation and separate human approval.
+        required: true
+        type: choice
+        options:
+          - preview-with-marker
+          - cleanup-without-marker
+      html_base64:
+        description: Base64-encoded self-contained digest HTML to publish
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Prepare and validate the selected preview stage
+        env:
+          HTML_BASE64: ${{ inputs.html_base64 }}
+          PUBLISH_STAGE: ${{ inputs.stage }}
+        run: |
+          set -euo pipefail
+          mkdir -p _site/digest/2026-10-28
+          printf '%s' "$HTML_BASE64" | base64 --decode > _site/digest/2026-10-28/index.html
+          python3 - <<'PY'
+          import html
+          import os
+          import re
+          from pathlib import Path
+
+          page = Path("_site/digest/2026-10-28/index.html").read_text(encoding="utf-8")
+          stage = os.environ["PUBLISH_STAGE"]
+          if not page.lower().startswith("<!doctype html>"):
+              raise SystemExit("Expected a complete HTML document")
+          if "2026-10-28" not in page or "digest" not in page.lower():
+              raise SystemExit("Expected the 2026-10-28 digest page")
+          if "<script" in page.lower():
+              raise SystemExit("Preview must not contain client-side scripts")
+          if re.search(r'''(?:src|href)\s*=\s*["']https?://''', page, re.IGNORECASE):
+              raise SystemExit("Preview must not depend on external assets")
+
+          header = page.split("</header>", 1)[0]
+          matches = re.findall(r'<span class="marker">([^<]*)</span>', header)
+          if len(matches) != 1:
+              raise SystemExit("Expected exactly one lane marker in the page banner")
+          marker = html.unescape(matches[0]).strip()
+
+          if stage == "preview-with-marker":
+              if not marker or marker == "no marker set":
+                  raise SystemExit("Preview stage requires a non-empty lane marker")
+          elif stage == "cleanup-without-marker":
+              if marker != "no marker set":
+                  raise SystemExit('Cleanup stage requires the banner text "no marker set"')
+          else:
+              raise SystemExit("Unknown publish stage")
+          PY
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - name: Deploy GitHub Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4
